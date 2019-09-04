@@ -25,6 +25,7 @@ type Scanner struct {
 	watcherBins  *fsnotify.Watcher
 	watcherRules *fsnotify.Watcher
 	resultsChan  chan BinaryMatches
+	started      bool
 }
 
 //NewScanner returns a new scanner, or an error if construction fails
@@ -44,21 +45,28 @@ func NewScanner(ruleDir, binDir, db string) (Scanner, error) {
 	if err != nil {
 		return Scanner{}, err
 	}
-	return Scanner{RuleDir: ruleDir, BinDir: binDir, ResultsDB: db, Compiler: compiler, resultsDB: gormdb, watcherRules: watcherRules, watcherBins: watcherBins, resultsChan: make(chan BinaryMatches, 1000)}, nil
+	return Scanner{RuleDir: ruleDir, BinDir: binDir, ResultsDB: db, Compiler: compiler, resultsDB: gormdb, watcherRules: watcherRules, watcherBins: watcherBins, resultsChan: make(chan BinaryMatches, 1000), started: false}, nil
 }
 
 //Start startup routine launches workers
-func (scanr *Scanner) Start() {
-	go ScanningWorker(scanr.BinDir, scanr.watcherBins.Events, scanr.resultsChan, scanr.Rules)
-	go ResultDBWorker(scanr.resultsDB,scanr.resultsChan)
+func (scanr *Scanner) Start(workerNum int) {
+	scanr.LoadBins()
+	scanr.LoadRules()
+	if !scanr.started { 
+		for i := 0; i < workerNum; i++ {
+			go ScanningWorker(scanr.BinDir, scanr.watcherBins.Events, scanr.resultsChan, scanr.Rules)
+		}
+		go ResultDBWorker(scanr.resultsDB, scanr.resultsChan)
+		scanr.started = true
+	}
 }
 
-//Close requisite close function
+//Close requisite close
 func (scanr *Scanner) Close() {
+	close(scanr.resultsChan)
 	scanr.resultsDB.Close()
 	scanr.watcherRules.Close()
 	scanr.watcherBins.Close()
-	yara.Finalize()
 }
 
 //LoadBins loads bins from disk into the db
@@ -82,7 +90,7 @@ func (scanr *Scanner) LoadRules() {
 	for _, file := range files {
 		log.Debugf(file.Name())
 		file, _ := os.Open(filepath.Join(scanr.RuleDir, file.Name()))
-		scanr.Compiler.AddFile(file, "")
+		scanr.Compiler.AddFile(file, file.Name())
 	}
 	scanr.Rules, _ = scanr.Compiler.GetRules()
 }
@@ -106,7 +114,7 @@ func ScanningWorker(binDir string, toScan <-chan fsnotify.Event, scanResults cha
 }
 
 //ResultDBWorker enters Results into the DB
-func ResultDBWorker(db * gorm.DB, scanResults <-chan BinaryMatches) {
+func ResultDBWorker(db *gorm.DB, scanResults <-chan BinaryMatches) {
 	/*type MatchRule struct {
 		Rule      string
 		Namespace string

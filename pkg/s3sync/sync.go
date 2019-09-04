@@ -29,22 +29,21 @@ type Syncer struct {
 func CopyWorker(source <-chan string, destpath string, downloader *s3manager.Downloader, bucket string, ignoreFiles map[string]bool) {
 	//func (d Downloader) Download(w io.WriterAt, input *s3.GetObjectInput, options ...func(*Downloader)) (n int64, err error)
 	for filename := range source {
-
 		ignore, ok := ignoreFiles[filename]
 		if !ok || (ok && !ignore) {
 			outfile, err := os.Open(filepath.Join(destpath, filename))
 			if err != nil {
 				log.Fatal(err)
-			}
-			defer outfile.Close()
-
-			_, err = downloader.Download(outfile,
-				&s3.GetObjectInput{
-					Bucket: aws.String(bucket),
-					Key:    aws.String(filename),
-				})
-			if err != nil {
-				log.Fatal(err)
+			} else {
+				defer outfile.Close()
+				_, err = downloader.Download(outfile,
+					&s3.GetObjectInput{
+						Bucket: aws.String(bucket),
+						Key:    aws.String(filename),
+					})
+				if err != nil {
+					log.Fatal(err)
+				}
 			}
 		}
 	}
@@ -74,7 +73,7 @@ func S3ListWorker(ticker <-chan time.Time, toCopy chan<- string, SourceBucket st
 		for _, item := range resp.Contents {
 			name := *item.Key
 			if _, ok := ignoredFiles[name]; !ok {
-				log.Infof("Name: ", name)
+				//log.Debugf("Name: ", name)
 				toCopy <- name
 			}
 		}
@@ -87,12 +86,16 @@ func (syncer *Syncer) Close() {
 }
 
 //Start - starts the sync
-func (syncer *Syncer) Start() {
+func (syncer *Syncer) Start(workerNum int) {
 	if !syncer.started {
-		go CopyWorker(syncer.toCopy, syncer.DestDir, syncer.downloader, syncer.SourceBucket, syncer.ignoreFiles)
-		go S3ListWorker(syncer.ticker.C, syncer.toCopy, syncer.SourceBucket, syncer.S3SVC, syncer.ignoreFiles)
-		go DirectoryContentsWorker(syncer.DestDir, syncer.ignoreFiles)
+		for i := 0 ; i < workerNum ; i ++ {
+			go CopyWorker(syncer.toCopy, syncer.DestDir, syncer.downloader, syncer.SourceBucket, syncer.ignoreFiles)
+			go S3ListWorker(syncer.ticker.C, syncer.toCopy, syncer.SourceBucket, syncer.S3SVC, syncer.ignoreFiles)
+			go DirectoryContentsWorker(syncer.DestDir, syncer.ignoreFiles)
+		}
 		syncer.started = true
+	} else { 
+		log.Debugf("Syncer already started...")
 	}
 }
 
