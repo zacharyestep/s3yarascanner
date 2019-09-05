@@ -2,6 +2,7 @@ package s3sync
 
 import (
 	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/credentials"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
@@ -17,11 +18,11 @@ type Syncer struct {
 	S3SVC        *s3.S3
 	SourceBucket string
 	DestDir      string
-	toRemove     chan string
 	toCopy       chan string
 	downloader   *s3manager.Downloader
 	ignoreFiles  map[string]bool
-	ticker       *time.Ticker
+	s3ticker     *time.Ticker
+	fsticker     *time.Ticker
 	started      bool
 }
 
@@ -31,9 +32,9 @@ func CopyWorker(source <-chan string, destpath string, downloader *s3manager.Dow
 	for filename := range source {
 		ignore, ok := ignoreFiles[filename]
 		if !ok || (ok && !ignore) {
-			outfile, err := os.Open(filepath.Join(destpath, filename))
+			outfile, err := os.OpenFile(filepath.Join(destpath, filename), os.O_WRONLY|os.O_CREATE, 0755)
 			if err != nil {
-				log.Fatal(err)
+				log.Fatalf("Copy worker %v", err)
 			} else {
 				defer outfile.Close()
 				_, err = downloader.Download(outfile,
@@ -42,22 +43,25 @@ func CopyWorker(source <-chan string, destpath string, downloader *s3manager.Dow
 						Key:    aws.String(filename),
 					})
 				if err != nil {
-					log.Fatal(err)
-				}
+					log.Fatalf("Copy worker %v", err)
+				} 
+				log.Infof("Copy worker copied %s!",filename)
 			}
 		}
 	}
 }
 
 //DirectoryContentsWorker uses the local file system and retrives files that are already on disk
-func DirectoryContentsWorker(destdir string, ignoreFiles map[string]bool) {
-	files, err := ioutil.ReadDir(destdir)
-	if err != nil {
-		log.Fatal(err)
-	}
-	for _, file := range files {
-		log.Infof(file.Name())
-		ignoreFiles[file.Name()] = true
+func DirectoryContentsWorker(ticker <-chan time.Time, destdir string, ignoreFiles map[string]bool) {
+	for range ticker {
+		files, err := ioutil.ReadDir(destdir)
+		if err != nil {
+			log.Fatalf("DW %v", err)
+		}
+		for _, file := range files {
+			//log.Infof(file.Name())
+			ignoreFiles[file.Name()] = true
+		}
 	}
 }
 
@@ -67,7 +71,7 @@ func S3ListWorker(ticker <-chan time.Time, toCopy chan<- string, SourceBucket st
 		resp, err := s3svc.ListObjectsV2(&s3.ListObjectsV2Input{Bucket: aws.String(SourceBucket)})
 
 		if err != nil {
-			log.Fatalf("Unable to list items in bucket %q, %v", SourceBucket, err)
+			log.Fatalf("S3Worker Unable to list items in bucket %q, %v", SourceBucket, err)
 		}
 
 		for _, item := range resp.Contents {
@@ -88,23 +92,46 @@ func (syncer *Syncer) Close() {
 //Start - starts the sync
 func (syncer *Syncer) Start(workerNum int) {
 	if !syncer.started {
-		for i := 0 ; i < workerNum ; i ++ {
+		for i := 0; i < workerNum; i++ {
 			go CopyWorker(syncer.toCopy, syncer.DestDir, syncer.downloader, syncer.SourceBucket, syncer.ignoreFiles)
-			go S3ListWorker(syncer.ticker.C, syncer.toCopy, syncer.SourceBucket, syncer.S3SVC, syncer.ignoreFiles)
-			go DirectoryContentsWorker(syncer.DestDir, syncer.ignoreFiles)
 		}
+		go S3ListWorker(syncer.s3ticker.C, syncer.toCopy, syncer.SourceBucket, syncer.S3SVC, syncer.ignoreFiles)
+		go DirectoryContentsWorker(syncer.fsticker.C, syncer.DestDir, syncer.ignoreFiles)
 		syncer.started = true
-	} else { 
+		log.Infof("Sync started ok")
+	} else {
 		log.Debugf("Syncer already started...")
 	}
 }
 
 //NewSyncer returns a Syncer or an error if construction fails
-func NewSyncer(srcBkt, destDir string) (syncer Syncer, err error) {
-	sess := session.Must(session.NewSession())
+func NewSyncer(srcBkt, destDir, endpointURL, awsregion, awsaccessid, awsaccesskey string, disableSSL, s3ForcePathStyle bool) (syncer Syncer, err error) {
+
+	awsCfg := aws.Config{}
+
+	if endpointURL != "" && len(endpointURL) > 0 {
+		awsCfg.Endpoint = aws.String(endpointURL)
+	}
+
+	if awsregion != "" && len(awsregion) > 0 {
+		awsCfg.Region = aws.String(awsregion)
+	} else {
+		awsCfg.Region = aws.String("us-east-1")
+	}
+
+	if len(awsaccessid) > 0 && len(awsaccesskey) > 0 {
+		awsCfg.Credentials = credentials.NewStaticCredentials(awsaccessid, awsaccesskey, "")
+	}
+
+	awsCfg.S3ForcePathStyle = aws.Bool(s3ForcePathStyle)
+	awsCfg.DisableSSL = aws.Bool(disableSSL)
+
+	sess := session.Must(session.NewSession(&awsCfg))
+
 	// The S3 client the S3 Downloader will use
-	ticker := time.NewTicker(7 * time.Second)
-	syncer = Syncer{SourceBucket: srcBkt, DestDir: destDir, S3SVC: s3.New(sess), ignoreFiles: make(map[string]bool), toCopy: make(chan string, 10000), ticker: ticker, started: false}
+	s3ticker := time.NewTicker(7 * time.Second)
+	fsticker := time.NewTicker(3 * time.Second)
+	syncer = Syncer{SourceBucket: srcBkt, DestDir: destDir, S3SVC: s3.New(sess), ignoreFiles: make(map[string]bool), toCopy: make(chan string, 10000), s3ticker: s3ticker, fsticker: fsticker, started: false}
 	// Create a downloader with the s3 client and default options
 	syncer.downloader = s3manager.NewDownloaderWithClient(syncer.S3SVC)
 

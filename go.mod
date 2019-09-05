@@ -12,6 +12,5 @@ require (
 	github.com/lib/pq v1.2.0 // indirect
 	github.com/mattn/go-sqlite3 v1.11.0
 	github.com/sirupsen/logrus v1.4.2
-	gopkg.in/reform.v1 v1.3.3
 	syreclabs.com/go/faker v1.2.0 // indirect
 )

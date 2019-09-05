@@ -1,6 +1,7 @@
 package yarascanner
 
 import (
+	"github.com/fsnotify/fsnotify"
 	"github.com/hillu/go-yara"
 	"github.com/jinzhu/gorm"
 	log "github.com/sirupsen/logrus"
@@ -9,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	//sqlitedilact for gorm
-	"github.com/fsnotify/fsnotify"
 	_ "github.com/jinzhu/gorm/dialects/sqlite"
 	"time"
 )
@@ -52,12 +52,14 @@ func NewScanner(ruleDir, binDir, db string) (Scanner, error) {
 func (scanr *Scanner) Start(workerNum int) {
 	scanr.LoadBins()
 	scanr.LoadRules()
-	if !scanr.started { 
+	if !scanr.started {
 		for i := 0; i < workerNum; i++ {
 			go ScanningWorker(scanr.BinDir, scanr.watcherBins.Events, scanr.resultsChan, scanr.Rules)
 		}
 		go ResultDBWorker(scanr.resultsDB, scanr.resultsChan)
 		scanr.started = true
+	} else {
+		log.Debugf("Scanner already started...")
 	}
 }
 
@@ -73,7 +75,7 @@ func (scanr *Scanner) Close() {
 func (scanr *Scanner) LoadBins() {
 	bins, err := ioutil.ReadDir(scanr.BinDir)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("Error loading binary dir %s %v", scanr.BinDir, err)
 	}
 	for _, bin := range bins {
 		log.Debugf(bin.Name())
@@ -85,10 +87,10 @@ func (scanr *Scanner) LoadBins() {
 func (scanr *Scanner) LoadRules() {
 	files, err := ioutil.ReadDir(scanr.RuleDir)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatalf("Error loadind rule %v", err)
 	}
 	for _, file := range files {
-		log.Debugf(file.Name())
+		//log.Debugf(file.Name())
 		file, _ := os.Open(filepath.Join(scanr.RuleDir, file.Name()))
 		scanr.Compiler.AddFile(file, file.Name())
 	}
@@ -108,6 +110,7 @@ func ScanningWorker(binDir string, toScan <-chan fsnotify.Event, scanResults cha
 		if err != nil {
 			log.Debugf("Error scanning %s %v", binFileEvent.Name, err)
 		} else {
+			log.Infof("Scanned %s succesfully...%d results", binFileEvent.Name, len(matches))
 			scanResults <- BinaryMatches{Matches: matches, FileHash: filepath.Base(binFileEvent.Name)}
 		}
 	}
