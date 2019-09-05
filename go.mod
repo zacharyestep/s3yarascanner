@@ -7,6 +7,7 @@ require (
 	github.com/aws/aws-sdk-go v1.23.13
 	github.com/denisenkom/go-mssqldb v0.0.0-20190830225923-3302f0226fbd // indirect
 	github.com/fsnotify/fsnotify v1.4.7
+	github.com/gorilla/mux v1.6.2
 	github.com/hillu/go-yara v1.1.0
 	github.com/jinzhu/gorm v1.9.10
 	github.com/lib/pq v1.2.0 // indirect

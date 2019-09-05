@@ -5,17 +5,50 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/zacharyestep/s3yarascanner/pkg/s3sync"
 	"github.com/zacharyestep/s3yarascanner/pkg/yarascanner"
+	"github.com/zacharyestep/s3yarascanner/pkg/feed"
 	"os"
 	"os/signal"
 	"runtime"
+	"net/http"
+	"net/url"
+	"github.com/jinzhu/gorm"
+	//sqlitedilact for gorm
+	_ "github.com/jinzhu/gorm/dialects/sqlite"
+	"time"
 )
 
+func configureLogging() {
+	loglevel := os.Getenv("LOGLEVEL")
+	loglevels := map[string]log.Level{"debug": log.DebugLevel, "info": log.InfoLevel, "error": log.ErrorLevel, "warn": log.WarnLevel, "trace": log.TraceLevel}
+	if len(loglevel) > 0 {
+		reallevel, ok := loglevels[loglevel]
+		if ok {
+			log.SetLevel(reallevel)
+		} else {
+			log.SetLevel(log.InfoLevel)
+		}
+	} else {
+		log.SetLevel(log.InfoLevel)
+	}
+}
 func main() {
+	//yara library's global cleanup routine defer'd to trigger at exit
 	defer yara.Finalize()
+
 	log.Info("Starting s3 yara service")
+	//configure the running log-level
+	configureLogging()
+
 	/*
-	
+		scanner is configured via ENVVARS (for docker ease of use)
+		and optional CLI parameters for the bucket, binary directory, rules directory, binary-database path/+name
+
+		This will try to pick up the .aws/config file by default for connectivity to AWS,
+		AWS_ACCESS_KEY and AWS_SECRET_KEY can be used instead, along with ENDPOINTURL, DISABLESSL,S3FORCEPATHSTYLE
+		AWS_REGION is also supported, defaulting to 'us-east-1'
+
 	*/
+
 	bucket := os.Getenv("BINARYSOURCEBUCKET")
 	if len(bucket) == 0 {
 		bucket = os.Args[1]
@@ -36,6 +69,7 @@ func main() {
 		db = os.Args[4]
 	}
 
+	//AWS related config options
 	endpointurl := os.Getenv("ENDPOINTURL")
 	awsregion := os.Getenv("AWS_REGION")
 	awsaccessid := os.Getenv("AWS_ACCESS_KEY")
@@ -43,7 +77,7 @@ func main() {
 
 	var disablessl = false
 	disablesslraw := os.Getenv("DISABLESSL")
-	if len(disablesslraw) > 0  {
+	if len(disablesslraw) > 0 {
 		disablessl = true
 	}
 	var s3forcepathstyle = false
@@ -51,13 +85,56 @@ func main() {
 	if len(s3forcepathstyleraw) > 0 {
 		s3forcepathstyle = true
 	}
-	syncer, _ := s3sync.NewSyncer(bucket, binaryDir, endpointurl, awsregion,awsaccessid,awsaccesskey,disablessl,s3forcepathstyle)
-	scanner, _ := yarascanner.NewScanner(binaryDir, rulesDir, db)
+
+	//options for feed server
+	feedServerURLStr := os.Getenv("FEEDSERVERURL")
+	if len(feedServerURLStr) == 0 { 
+		feedServerURLStr = "http://127.0.0.1:31452"
+	}
+
+	feedServerHostURL,err  := url.Parse(feedServerURLStr)
+	if err != nil {
+		log.Fatalf("Error parsing server url %s - %v",feedServerURLStr,err)
+	}
+
+	feedServerHost := feedServerHostURL.Hostname() + ":" + feedServerHostURL.Port()
+
+	feedServerTemplateFile := os.Getenv("FEEDSERVERTEMPLATEFILE")
+	if len(feedServerTemplateFile) == 0 {
+		feedServerTemplateFile = "./feed.tmpl"
+	}
+
+	dbGorm,err := gorm.Open("sqlite3",db)
+	if err != nil  {
+		log.Fatalf("Couldn't open db for feed %s %v",db,err)
+	}
+
+	syncer, _ := s3sync.NewSyncer(bucket, binaryDir, endpointurl, awsregion, awsaccessid, awsaccesskey, disablessl, s3forcepathstyle)
+	scanner, _ := yarascanner.NewScanner(binaryDir, rulesDir, dbGorm)
+
 	syncer.Start(runtime.NumCPU())
 	scanner.Start(runtime.NumCPU())
 
+	feedrouter,err := feed.NewServerTmplFile(feedServerTemplateFile,dbGorm)
+	if err != nil {
+		log.Fatalf("Error setting up Feed Server %s %v",feedServerTemplateFile,err)
+	}
+	srv := &http.Server{
+        Handler:      feedrouter.Router,
+        Addr:         feedServerHost,
+        // Good practice: enforce timeouts for servers you create!
+        WriteTimeout: 15 * time.Second,
+        ReadTimeout:  15 * time.Second,
+	}
+	
+	go func() { 
+		log.Fatalf("Error Serving feed %v",srv.ListenAndServe())
+	}()
+
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt)
+
+
 
 	for {
 		select {
@@ -65,7 +142,7 @@ func main() {
 			log.Debugf("Handling sig %s", sig)
 			syncer.Close()
 			scanner.Close()
-			log.Infof("Yara scanner exiting OK")
+			log.Debugf("Yara scanner main exiting OK")
 			return
 		}
 	}

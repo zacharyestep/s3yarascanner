@@ -12,13 +12,13 @@ import (
 	//sqlitedilact for gorm
 	_ "github.com/jinzhu/gorm/dialects/sqlite"
 	"time"
+	"sync"
 )
 
 //Scanner type monitors a rule directory, a bin directory, and timely scans binaries and records the results in the configured DB
 type Scanner struct {
 	RuleDir      string
 	BinDir       string
-	ResultsDB    string
 	resultsDB    *gorm.DB
 	Compiler     *yara.Compiler
 	Rules        *yara.Rules
@@ -26,26 +26,23 @@ type Scanner struct {
 	watcherRules *fsnotify.Watcher
 	resultsChan  chan BinaryMatches
 	started      bool
+	workerwaitgroup *sync.WaitGroup
 }
 
 //NewScanner returns a new scanner, or an error if construction fails
-func NewScanner(ruleDir, binDir, db string) (Scanner, error) {
+func NewScanner(ruleDir, binDir string, db * gorm.DB) (*Scanner, error) {
 	compiler, err := yara.NewCompiler()
-	gormdb, err := gorm.Open("sqlite3", db)
-	if err != nil {
-		return Scanner{}, err
-	}
 	watcherBins, err := fsnotify.NewWatcher()
 	err = watcherBins.Add(binDir)
 	if err != nil {
-		return Scanner{}, err
+		return nil, err
 	}
 	watcherRules, err := fsnotify.NewWatcher()
 	err = watcherRules.Add(ruleDir)
 	if err != nil {
-		return Scanner{}, err
+		return nil, err
 	}
-	return Scanner{RuleDir: ruleDir, BinDir: binDir, ResultsDB: db, Compiler: compiler, resultsDB: gormdb, watcherRules: watcherRules, watcherBins: watcherBins, resultsChan: make(chan BinaryMatches, 1000), started: false}, nil
+	return &Scanner{RuleDir: ruleDir, BinDir: binDir, Compiler: compiler, resultsDB: db, watcherRules: watcherRules, watcherBins: watcherBins, resultsChan: make(chan BinaryMatches, 1000), started: false}, nil
 }
 
 //Start startup routine launches workers
@@ -54,9 +51,9 @@ func (scanr *Scanner) Start(workerNum int) {
 	scanr.LoadRules()
 	if !scanr.started {
 		for i := 0; i < workerNum; i++ {
-			go ScanningWorker(scanr.BinDir, scanr.watcherBins.Events, scanr.resultsChan, scanr.Rules)
+			go ScanningWorker(scanr.BinDir, scanr.watcherBins.Events, scanr.resultsChan, scanr.Rules,scanr.workerwaitgroup)
 		}
-		go ResultDBWorker(scanr.resultsDB, scanr.resultsChan)
+		go ResultDBWorker(scanr.resultsDB, scanr.resultsChan,scanr.workerwaitgroup)
 		scanr.started = true
 	} else {
 		log.Debugf("Scanner already started...")
@@ -69,6 +66,7 @@ func (scanr *Scanner) Close() {
 	scanr.resultsDB.Close()
 	scanr.watcherRules.Close()
 	scanr.watcherBins.Close()
+	scanr.workerwaitgroup.Wait()
 }
 
 //LoadBins loads bins from disk into the db
@@ -104,7 +102,9 @@ type BinaryMatches struct {
 }
 
 //ScanningWorker go routine worker that knows how to scan files by name using a configured ruleset
-func ScanningWorker(binDir string, toScan <-chan fsnotify.Event, scanResults chan<- BinaryMatches, ruleset *yara.Rules) {
+func ScanningWorker(binDir string, toScan <-chan fsnotify.Event, scanResults chan<- BinaryMatches, ruleset *yara.Rules, wg * sync.WaitGroup) {
+	wg.Add(1)
+	defer wg.Done()
 	for binFileEvent := range toScan {
 		matches, err := ruleset.ScanFile(filepath.Join(binDir, binFileEvent.Name), 0, 30*time.Second)
 		if err != nil {
@@ -114,10 +114,11 @@ func ScanningWorker(binDir string, toScan <-chan fsnotify.Event, scanResults cha
 			scanResults <- BinaryMatches{Matches: matches, FileHash: filepath.Base(binFileEvent.Name)}
 		}
 	}
+	log.Debugf("Scanning worker exiting...")
 }
 
 //ResultDBWorker enters Results into the DB
-func ResultDBWorker(db *gorm.DB, scanResults <-chan BinaryMatches) {
+func ResultDBWorker(db *gorm.DB, scanResults <-chan BinaryMatches, wg *sync.WaitGroup) {
 	/*type MatchRule struct {
 		Rule      string
 		Namespace string
@@ -125,9 +126,12 @@ func ResultDBWorker(db *gorm.DB, scanResults <-chan BinaryMatches) {
 		Meta      map[string]interface{}
 		Strings   []MatchString
 	}*/
+	wg.Add(1)
+	defer wg.Done()
 	for matches := range scanResults {
 		for _, match := range matches.Matches {
 			db.Create(models.Result{BinaryHash: matches.FileHash, Rule: match.Rule, Score: match.Meta["Score"].(int), Namespace: match.Namespace})
 		}
 	}
+	log.Debugf("DB Worker exiting")
 }
