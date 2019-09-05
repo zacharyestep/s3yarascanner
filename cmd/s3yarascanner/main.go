@@ -6,6 +6,7 @@ import (
 	"github.com/zacharyestep/s3yarascanner/pkg/s3sync"
 	"github.com/zacharyestep/s3yarascanner/pkg/yarascanner"
 	"github.com/zacharyestep/s3yarascanner/pkg/feed"
+	"github.com/zacharyestep/s3yarascanner/pkg/models"
 	"os"
 	"os/signal"
 	"runtime"
@@ -20,17 +21,17 @@ import (
 func configureLogging() {
 	loglevel := os.Getenv("LOGLEVEL")
 	loglevels := map[string]log.Level{"debug": log.DebugLevel, "info": log.InfoLevel, "error": log.ErrorLevel, "warn": log.WarnLevel, "trace": log.TraceLevel}
+	chosenLevel := log.InfoLevel
 	if len(loglevel) > 0 {
 		reallevel, ok := loglevels[loglevel]
 		if ok {
-			log.SetLevel(reallevel)
-		} else {
-			log.SetLevel(log.InfoLevel)
-		}
-	} else {
-		log.SetLevel(log.InfoLevel)
-	}
+			chosenLevel = reallevel
+		} 
+	} 
+	log.SetLevel(chosenLevel)
+	log.Infof("Log level is %s",chosenLevel)
 }
+
 func main() {
 	//yara library's global cleanup routine defer'd to trigger at exit
 	defer yara.Finalize()
@@ -105,12 +106,24 @@ func main() {
 	}
 
 	dbGorm,err := gorm.Open("sqlite3",db)
+	
 	if err != nil  {
 		log.Fatalf("Couldn't open db for feed %s %v",db,err)
 	}
 
-	syncer, _ := s3sync.NewSyncer(bucket, binaryDir, endpointurl, awsregion, awsaccessid, awsaccesskey, disablessl, s3forcepathstyle)
-	scanner, _ := yarascanner.NewScanner(binaryDir, rulesDir, dbGorm)
+	dbGorm.AutoMigrate(&models.Binary{},&models.Rule{},&models.Result{})
+
+	syncer, err:= s3sync.NewSyncer(bucket, binaryDir, endpointurl, awsregion, awsaccessid, awsaccesskey, disablessl, s3forcepathstyle)
+
+	if err != nil {
+		log.Fatalf("Error in syncer construction %v",err)
+	}
+
+	scanner, err := yarascanner.NewScanner(binaryDir, rulesDir, dbGorm)
+
+	if err != nil { 
+		log.Fatalf("Error in scanner construction %v",err)
+	}
 
 	syncer.Start(runtime.NumCPU())
 	scanner.Start(runtime.NumCPU())
@@ -127,14 +140,13 @@ func main() {
         ReadTimeout:  15 * time.Second,
 	}
 	
+	//Todo - HANDLE SHUTTING THIS DOWN
 	go func() { 
 		log.Fatalf("Error Serving feed %v",srv.ListenAndServe())
 	}()
 
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt)
-
-
 
 	for {
 		select {

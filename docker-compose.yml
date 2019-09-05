@@ -1,0 +1,46 @@
+version: '3.7'
+
+# starts 4 docker containers running minio server instances. Each
+# minio server's web interface will be accessible on the host at port
+# 9001 through 9004.
+services:
+  scanner:
+    build: 
+      context: ./cmd/s3yarascanner
+      args:
+        RULESDIR: ./rules 
+        BINARYDIR: ./bins 
+
+    environment:
+      BINARYSOURCEBUCKET: bucket 
+      ENDPOINTURL: http://127.0.0.1:9000 
+      SQLITEDB: ./db/results.db 
+      RULESDIR: ./rules 
+      BINARYDIR: ./bins 
+      AWS_ACCESS_KEY: minio 
+      AWS_SECRET_KEY: minio123 
+      S3FORCEPATHSTYLE: 1 
+      DISABLESSL: 1
+      AWS_REGION: us-east-1 
+      LOGLEVEL: debug
+
+  minio1:
+    image: minio/minio:RELEASE.2019-08-29T00-25-01Z
+    volumes:
+      - data1-1:/data1
+      - data1-2:/data2
+    ports:
+      - "9000:9000"
+    environment:
+      MINIO_ACCESS_KEY: minio
+      MINIO_SECRET_KEY: minio123
+    command: server /data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+volumes:
+  data1-1:
+  data1-2:

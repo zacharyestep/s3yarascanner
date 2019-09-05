@@ -30,7 +30,8 @@ type Scanner struct {
 }
 
 //NewScanner returns a new scanner, or an error if construction fails
-func NewScanner(ruleDir, binDir string, db * gorm.DB) (*Scanner, error) {
+func NewScanner(binDir,ruleDir string, db * gorm.DB) (*Scanner, error) {
+	log.Debugf("NewScanner %s %s",ruleDir,binDir)
 	watcherBins, err := fsnotify.NewWatcher()
 	err = watcherBins.Add(binDir)
 	if err != nil {
@@ -43,6 +44,7 @@ func NewScanner(ruleDir, binDir string, db * gorm.DB) (*Scanner, error) {
 	}
 	wrp, err := NewWatchedRulesetProvider(ruleDir,db,watcherRules.Events)
 	if err != nil {
+		log.Debugf("Error watcher contstruction %v",err)
 		return nil, err
 	}
 	return &Scanner{RulesetProvider: wrp,workerwaitgroup: &sync.WaitGroup{},RuleDir: ruleDir, BinDir: binDir, resultsDB: db, watcherRules: watcherRules, watcherBins: watcherBins, resultsChan: make(chan BinaryMatches, 1000), started: false}, nil
@@ -67,8 +69,9 @@ type WatchedRulesetProvider struct {
 
 //NewWatchedRulesetProvider factory method constructing a working RulesetProvider
 func NewWatchedRulesetProvider(ruleDir string, ruleDb * gorm.DB, rulesUpdateChan <-chan fsnotify.Event) (* WatchedRulesetProvider , error) {
-	
+	log.Debugf("NewWatchedRulesetProvider %s", ruleDir)
 	if _, err := os.Stat(ruleDir); os.IsNotExist(err) {
+		log.Debugf("Error is rule dir not exist")
 		return nil, err
 	}
 	
@@ -77,10 +80,12 @@ func NewWatchedRulesetProvider(ruleDir string, ruleDb * gorm.DB, rulesUpdateChan
 	}
 	compiler,err := yara.NewCompiler()
 	if err != nil { 
-		return nil , err
+		
+		return nil , fmt.Errorf("YC error %v ",err)
 	}
 	wrp := WatchedRulesetProvider{Compiler: compiler, RuleDir: ruleDir, RuleDB: ruleDb , RulesChan: rulesUpdateChan}
 	err = wrp.LoadRules()
+	log.Debugf("Load rules returned %v errorcode",err)
 	return &wrp,err
 }
 
@@ -121,7 +126,7 @@ func (wrp * WatchedRulesetProvider ) loadRule(dir,fileName string) error {
 	if err != nil { 
 		return err
 	}
-	wrp.RuleDB.Create(&models.Rule{Name:fileName,Created: time.Now(),Modified: time.Now()})
+	wrp.RuleDB.Create(&models.Rule{Name:fileName})
 	return nil
 }
 
@@ -135,10 +140,10 @@ func (wrp * WatchedRulesetProvider) LoadRules() error {
 	}
 	for _, file := range files {
 		err := wrp.loadRule(wrp.RuleDir,file.Name())
-		/*if err != nil {
-			log.Errorf("Errro loading rule %s %v",Name(),err)
-		}*/
-		return err
+		if err != nil {
+			log.Errorf("Errro loading rule %s %v",file.Name(),err)
+			return err 
+		}
 	}
 	return nil
 }
@@ -179,14 +184,14 @@ func (scanr *Scanner) Close() {
 }
 
 //LoadBins loads bins from disk into the db
-func (scanr *Scanner) LoadBins() {
+func (scanr * Scanner) LoadBins() {
 	bins, err := ioutil.ReadDir(scanr.BinDir)
 	if err != nil {
 		log.Fatalf("Error loading binary dir %s %v", scanr.BinDir, err)
 	}
 	for _, bin := range bins {
 		log.Debugf(bin.Name())
-		scanr.resultsDB.Create(&models.Binary{Hash: bin.Name(), Created: time.Now()})
+		scanr.resultsDB.Create(&models.Binary{Hash: bin.Name()})
 	}
 }
 
@@ -231,7 +236,7 @@ func ResultDBWorker(db *gorm.DB, scanResults <-chan BinaryMatches, wg *sync.Wait
 	defer wg.Done()
 	for matches := range scanResults {
 		for _, match := range matches.Matches {
-			db.Create(models.Result{BinaryHash: matches.FileHash, RuleName: match.Rule, Score: match.Meta["Score"].(int), Namespace: match.Namespace, Created: time.Now()})
+			db.Create(models.Result{BinaryHash: matches.FileHash, RuleName: match.Rule, Score: match.Meta["Score"].(int), Namespace: match.Namespace})
 		}
 	}
 	log.Debugf("DB Worker exiting")

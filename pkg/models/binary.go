@@ -9,6 +9,5 @@ import (
 type Binary struct {
 	gorm.Model
 	Hash string `gorm: "primary_key"`
-	Created time.Time
 	LastScanedAt time.Time
 }
