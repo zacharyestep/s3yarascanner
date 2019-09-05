@@ -33,6 +33,7 @@ type Syncer struct {
 func CopyWorker(source <-chan string, destpath string, downloader *s3manager.Downloader, bucket string, ignoreFiles map[string]bool, wg *sync.WaitGroup) {
 	//func (d Downloader) Download(w io.WriterAt, input *s3.GetObjectInput, options ...func(*Downloader)) (n int64, err error)
 	wg.Add(1)
+	defer log.Debugf("Copy worker returning")
 	defer wg.Done()
 	for filename := range source {
 		ignore, ok := ignoreFiles[filename]
@@ -59,6 +60,7 @@ func CopyWorker(source <-chan string, destpath string, downloader *s3manager.Dow
 //DirectoryContentsWorker uses the local file system and retrives files that are already on disk
 func DirectoryContentsWorker(ticker <-chan time.Time, destdir string, ignoreFiles map[string]bool, done <-chan bool, wg *sync.WaitGroup) {
 	wg.Add(1)
+	defer log.Debugf("Directory worker returning")
 	defer wg.Done()
 	for {
 		select {
@@ -80,6 +82,7 @@ func DirectoryContentsWorker(ticker <-chan time.Time, destdir string, ignoreFile
 //S3ListWorker periodically checks the contents of the bucket and queues new files for download
 func S3ListWorker(ticker <-chan time.Time, toCopy chan<- string, SourceBucket string, s3svc *s3.S3, ignoredFiles map[string]bool, done <-chan bool, wg *sync.WaitGroup) {
 	wg.Add(1)
+	defer log.Debugf("S3List worker returning")
 	defer wg.Done()
 	for {
 		select {
@@ -112,6 +115,7 @@ func (syncer *Syncer) Close() {
 		workercontrol <- true
 	}
 	syncer.workersdone.Wait()
+	log.Debugf("Syncer - all workers done -")
 }
 
 //Start - starts the sync
