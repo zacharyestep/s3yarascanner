@@ -106,9 +106,9 @@ func main() {
 	}
 
 	dbGorm,err := gorm.Open("sqlite3",db)
-	
+
 	if err != nil  {
-		log.Fatalf("Couldn't open db for feed %s %v",db,err)
+		log.Fatalf("%s %v",db,err)
 	}
 
 	dbGorm.AutoMigrate(&models.Binary{},&models.Rule{},&models.Result{})
@@ -129,6 +129,7 @@ func main() {
 	scanner.Start(runtime.NumCPU())
 
 	feedrouter,err := feed.NewServerTmplFile(feedServerTemplateFile,dbGorm)
+	feedrouter.Routes()
 	if err != nil {
 		log.Fatalf("Error setting up Feed Server %s %v",feedServerTemplateFile,err)
 	}

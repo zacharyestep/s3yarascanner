@@ -206,6 +206,7 @@ type BinaryMatches struct {
 //ScanningWorker go routine worker that knows how to scan files by name using a configured ruleset
 func ScanningWorker(binDir string, toScan <-chan fsnotify.Event, scanResults chan<- BinaryMatches, rulesetProvider RulesetProvider, wg * sync.WaitGroup) {
 	wg.Add(1)
+	defer log.Debugf("scanning worker exiting")
 	defer wg.Done()
 	for binFileEvent := range toScan {
 		ruleset,err := rulesetProvider.GetRules()
@@ -220,7 +221,6 @@ func ScanningWorker(binDir string, toScan <-chan fsnotify.Event, scanResults cha
 			scanResults <- BinaryMatches{Matches: matches, FileHash: filepath.Base(binFileEvent.Name)}
 		}
 	}
-	log.Debugf("Scanning worker exiting...")
 }
 
 //ResultDBWorker enters Results into the DB
@@ -233,11 +233,13 @@ func ResultDBWorker(db *gorm.DB, scanResults <-chan BinaryMatches, wg *sync.Wait
 		Strings   []MatchString
 	}*/
 	wg.Add(1)
+	defer log.Debugf("DB Worker exiting")
 	defer wg.Done()
+
 	for matches := range scanResults {
 		for _, match := range matches.Matches {
 			db.Create(models.Result{BinaryHash: matches.FileHash, RuleName: match.Rule, Score: match.Meta["Score"].(int), Namespace: match.Namespace})
 		}
 	}
-	log.Debugf("DB Worker exiting")
+
 }

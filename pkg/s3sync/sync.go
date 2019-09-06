@@ -161,8 +161,9 @@ func NewSyncer(srcBkt, destDir, endpointURL, awsregion, awsaccessid, awsaccesske
 	sess := session.Must(session.NewSession(&awsCfg))
 
 	// The S3 client the S3 Downloader will use
-	s3ticker := time.NewTicker(2 * time.Second)
+	s3ticker := time.NewTicker(1 * time.Second)
 	fsticker := time.NewTicker(1 * time.Second)
+
 	syncer = &Syncer{SourceBucket: srcBkt, DestDir: destDir, S3SVC: s3.New(sess), ignoreFiles: make(map[string]bool), toCopy: make(chan string, 10000), s3ticker: s3ticker, fsticker: fsticker, started: false, workersdone: &sync.WaitGroup{}, workerexits: make([]chan bool, 0)}
 	// Create a downloader with the s3 client and default options
 	syncer.downloader = s3manager.NewDownloaderWithClient(syncer.S3SVC)
