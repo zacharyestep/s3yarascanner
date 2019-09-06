@@ -16,6 +16,9 @@ import (
 	//sqlitedilact for gorm
 	_ "github.com/jinzhu/gorm/dialects/sqlite"
 	"time"
+	"github.com/rcrowley/go-metrics"
+	"github.com/cyberdelia/go-metrics-graphite"
+	"net"
 )
 
 func configureLogging() {
@@ -125,11 +128,10 @@ func main() {
 		log.Fatalf("Error in scanner construction %v",err)
 	}
 
-	syncer.Start(runtime.NumCPU())
+	syncer.Start(runtime.NumCPU()/2)
 	scanner.Start(runtime.NumCPU())
 
 	feedrouter,err := feed.NewServerTmplFile(feedServerTemplateFile,dbGorm)
-	feedrouter.Routes()
 	if err != nil {
 		log.Fatalf("Error setting up Feed Server %s %v",feedServerTemplateFile,err)
 	}
@@ -139,6 +141,27 @@ func main() {
         // Good practice: enforce timeouts for servers you create!
         WriteTimeout: 15 * time.Second,
         ReadTimeout:  15 * time.Second,
+	}
+	runmetrics := os.Getenv("RUNMETRICS")
+	metricEndpoint := os.Getenv("METRICSENDPOINT")
+	metricsInterval := os.Getenv("METRICSINTERVAL")	
+	realMetricsInterval := 3 * time.Minute
+
+	if len(metricsInterval) > 0 {
+		realMetricsInterval, err = time.ParseDuration(metricsInterval)
+		log.Fatalf("error with metrics interval %s %v",metricsInterval,err)
+	}
+
+	if len(runmetrics) > 0 {
+		go metrics.Log(metrics.DefaultRegistry, realMetricsInterval, log.New() )
+	}
+
+	if len(metricEndpoint) > 0 {
+		addr, err := net.ResolveTCPAddr("tcp", metricEndpoint)
+		if err != nil { 
+			log.Fatalf("Error starting metrics to graphite...%s %v",metricEndpoint, err)
+		}
+		go graphite.Graphite(metrics.DefaultRegistry, realMetricsInterval , "yarascanner", addr)
 	}
 	
 	//Todo - HANDLE SHUTTING THIS DOWN
@@ -155,7 +178,7 @@ func main() {
 			log.Debugf("Handling sig %s", sig)
 			syncer.Close()
 			scanner.Close()
-			log.Debugf("Yara scanner main exiting OK")
+			log.Debugf("Yara scanner exiting OK")
 			return
 		}
 	}

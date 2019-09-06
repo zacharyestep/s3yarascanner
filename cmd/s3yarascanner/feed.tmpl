@@ -1,1 +1,20 @@
-{{ range .Reports }} Score is - ResultsDB: db{{.Score}} {{end}}
+{
+  "feedinfo": {
+    "name": "yaraintegration",
+    "display_name": "Tor Exit Nodes",
+    "provider_url": "https://torproject.org/",
+    "summary": "This feed is a list of Tor Node IP addresses, updated every 30 minutes.",
+    "tech_data": "There are no requirements to share any data to receive this feed.",
+    "icon": "tor.png",
+    "icon_small": "tor.small.png",
+    "category": "Open Source"
+   }, 
+   "reports": {{$i, $r := range .reports}} {
+    "timestamp" : {{now()}},
+    "id" : {{$i}},
+    "link": "www.google.com",
+    "title": {{$r.RuleName}},
+    "score": {{$r.Score}},
+    "iocs" : {"md5":{{$r.BinaryHash}}}      
+   }, {{end}}
+}

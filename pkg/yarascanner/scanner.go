@@ -21,12 +21,13 @@ type Scanner struct {
 	RuleDir      string
 	BinDir       string
 	resultsDB    *gorm.DB
-	RulesetProvider RulesetProvider
+	RulesetProvider *WatchedRulesetProvider
 	watcherBins  *fsnotify.Watcher
 	watcherRules *fsnotify.Watcher
 	resultsChan  chan BinaryMatches
 	started      bool
 	workerwaitgroup *sync.WaitGroup
+	ScanningChan chan fsnotify.Event
 }
 
 //NewScanner returns a new scanner, or an error if construction fails
@@ -47,7 +48,9 @@ func NewScanner(binDir,ruleDir string, db * gorm.DB) (*Scanner, error) {
 		log.Debugf("Error watcher contstruction %v",err)
 		return nil, err
 	}
-	return &Scanner{RulesetProvider: wrp,workerwaitgroup: &sync.WaitGroup{},RuleDir: ruleDir, BinDir: binDir, resultsDB: db, watcherRules: watcherRules, watcherBins: watcherBins, resultsChan: make(chan BinaryMatches, 1000), started: false}, nil
+	resultschan := make(chan BinaryMatches, 1000)
+	scanningChan := make(chan fsnotify.Event, 10000)
+	return &Scanner{ScanningChan : scanningChan,RulesetProvider: wrp,workerwaitgroup: &sync.WaitGroup{},RuleDir: ruleDir, BinDir: binDir, resultsDB: db, watcherRules: watcherRules, watcherBins: watcherBins, resultsChan: resultschan, started: false}, nil
 }
 
 //RulesetProvider is any source of yara rules providing a GetRules function
@@ -55,20 +58,42 @@ type RulesetProvider interface {
 	LoadRules()	(error)
 	GetRules() (* yara.Rules, error)
 	Go(wg * sync.WaitGroup) 
+	Stop()
 }
 
-//WatchedRulesetProvider is a RulesetProvider that updates the rules when a 
+//BinaryRescanRuleWatcher Uses rule notifications to query the DB, and send a list of binary-hash-names to be scanned-again with the new ruleset (ie , all of the bins)
+func BinaryRescanRuleWatcher(bindb * gorm.DB, ruleChanged <-chan fsnotify.Event, tobeScanned chan<- fsnotify.Event, wg * sync.WaitGroup) {
+	wg.Add(1)
+	defer log.Debug("BinaryRescanRuleWatcher exiting...")
+	defer wg.Done()
+	for range ruleChanged { 
+		bins := make([] models.Binary,0)
+		bindb.Find(bins)
+		for _, bin := range bins {
+			tobeScanned <- fsnotify.Event{Name: bin.Hash}
+		}
+	}
+}
+
+//WatchedRulesetProvider is a RulesetProvider that updates the rules when they change
 type WatchedRulesetProvider struct { 
 	Compiler * yara.Compiler
-	RulesChan <-chan fsnotify.Event
+	IncomingRulesChan chan fsnotify.Event
+	OutgoingRulesChan chan fsnotify.Event
 	RuleDB * gorm.DB
 	sync.RWMutex
 	rules * yara.Rules
 	RuleDir string
 }
 
+
+//Stop closes output channel
+func (wrp * WatchedRulesetProvider) Stop() { 
+	close(wrp.OutgoingRulesChan)
+}
+
 //NewWatchedRulesetProvider factory method constructing a working RulesetProvider
-func NewWatchedRulesetProvider(ruleDir string, ruleDb * gorm.DB, rulesUpdateChan <-chan fsnotify.Event) (* WatchedRulesetProvider , error) {
+func NewWatchedRulesetProvider(ruleDir string, ruleDb * gorm.DB, rulesUpdateChan chan fsnotify.Event) (* WatchedRulesetProvider , error) {
 	log.Debugf("NewWatchedRulesetProvider %s", ruleDir)
 	if _, err := os.Stat(ruleDir); os.IsNotExist(err) {
 		log.Debugf("Error is rule dir not exist")
@@ -83,7 +108,7 @@ func NewWatchedRulesetProvider(ruleDir string, ruleDb * gorm.DB, rulesUpdateChan
 		
 		return nil , fmt.Errorf("YC error %v ",err)
 	}
-	wrp := WatchedRulesetProvider{Compiler: compiler, RuleDir: ruleDir, RuleDB: ruleDb , RulesChan: rulesUpdateChan}
+	wrp := WatchedRulesetProvider{Compiler: compiler, RuleDir: ruleDir, RuleDB: ruleDb , IncomingRulesChan: rulesUpdateChan, OutgoingRulesChan: make(chan fsnotify.Event,1000)}
 	err = wrp.LoadRules()
 	log.Debugf("Load rules returned %v errorcode",err)
 	return &wrp,err
@@ -94,7 +119,8 @@ func (wrp * WatchedRulesetProvider) Go(wg * sync.WaitGroup) {
 	wg.Add(1)
 	defer log.Debug("WatchedRuleSetProvider -> Go exiting")
 	defer wg.Done()
-	for ruleEvent := range wrp.RulesChan { 
+	for ruleEvent := range wrp.IncomingRulesChan { 
+		wrp.OutgoingRulesChan <- ruleEvent
 		wrp.Lock()
 		defer wrp.Unlock()
 		err := wrp.loadRule(wrp.RuleDir,ruleEvent.Name)
@@ -154,6 +180,17 @@ func (scanr * Scanner) GetRules() (*yara.Rules, error) {
 }
 
 
+//PipeWorker joins two channels (the file events, and the artifical channel hosted by the scanner, is the usage below)
+func PipeWorker(dest chan<- fsnotify.Event, source <-chan fsnotify.Event, wg * sync.WaitGroup) {
+	wg.Add(1)
+	defer log.Debugf("Pipeworker exiting...")
+	defer wg.Done()
+	for msg := range source { 
+		dest <- msg
+	}
+}
+
+
 //Start startup routine launches workers
 func (scanr *Scanner) Start(workerNum int) {
 	scanr.LoadBins()
@@ -161,11 +198,15 @@ func (scanr *Scanner) Start(workerNum int) {
 	if err != nil { 
 		log.Fatalf("Error starting scanner - %v",err)
 	}
+	go BinaryRescanRuleWatcher(scanr.resultsDB,scanr.RulesetProvider.OutgoingRulesChan, scanr.ScanningChan, scanr.workerwaitgroup)
 	if !scanr.started {
 		for i := 0; i < workerNum; i++ {
-			go ScanningWorker(scanr.BinDir, scanr.watcherBins.Events, scanr.resultsChan, scanr.RulesetProvider,scanr.workerwaitgroup)
+			go ScanningWorker(scanr.BinDir, scanr.ScanningChan, scanr.resultsChan, scanr.RulesetProvider,scanr.workerwaitgroup)
 		}
-		go ResultDBWorker(scanr.resultsDB, scanr.resultsChan,scanr.workerwaitgroup)
+		//Pipeworker sends fsnotify events from the watcher to the 'ScanningChan' that yara-scanning workers will monitor
+		//This allows other sources of bin-events, like when a binary needs to be rescanned
+		go PipeWorker(scanr.ScanningChan,scanr.watcherBins.Events, scanr.workerwaitgroup)
+		go ResultDBWorker(scanr.resultsDB, scanr.resultsChan, scanr.workerwaitgroup)
 		go scanr.RulesetProvider.Go(scanr.workerwaitgroup)
 		scanr.started = true
 	} else {
@@ -175,11 +216,18 @@ func (scanr *Scanner) Start(workerNum int) {
 
 //Close requisite close
 func (scanr *Scanner) Close() {
+
 	close(scanr.resultsChan)
-	scanr.resultsDB.Close()
+	close(scanr.ScanningChan)
+	//scanr.resultsDB.Close()
+
 	scanr.watcherRules.Close()
 	scanr.watcherBins.Close()
+
+	scanr.RulesetProvider.Stop() 
+
 	scanr.workerwaitgroup.Wait()
+
 	log.Debugf("Scanner - all workers done -")
 }
 
@@ -195,8 +243,6 @@ func (scanr * Scanner) LoadBins() {
 	}
 }
 
-
-
 //BinaryMatches pairs a Binary-Hash/filename with set of results from yarascans - [] yara.MatchRule
 type BinaryMatches struct {
 	Matches  []yara.MatchRule
@@ -204,7 +250,7 @@ type BinaryMatches struct {
 }
 
 //ScanningWorker go routine worker that knows how to scan files by name using a configured ruleset
-func ScanningWorker(binDir string, toScan <-chan fsnotify.Event, scanResults chan<- BinaryMatches, rulesetProvider RulesetProvider, wg * sync.WaitGroup) {
+func ScanningWorker(binDir string, toScan <-chan fsnotify.Event, scanResults chan<- BinaryMatches, rulesetProvider * WatchedRulesetProvider, wg * sync.WaitGroup) {
 	wg.Add(1)
 	defer log.Debugf("scanning worker exiting")
 	defer wg.Done()

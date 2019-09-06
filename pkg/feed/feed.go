@@ -8,6 +8,7 @@ import (
 	"github.com/zacharyestep/s3yarascanner/pkg/models"
 	"net/http"
 	"text/template"
+	"time"
 )
 //Server is s server for intelligence feeds based on the information contained in the database
 type Server struct { 
@@ -31,7 +32,11 @@ func NewServerTmplFile(feedTmplFile string, fddb * gorm.DB) (* Server , error) {
 	if err != nil { 
 		return nil, err
 	}
-	return &Server{FeedDB: fddb, Router: mux.NewRouter(), Template: tmpl },nil
+	funcMap := template.FuncMap{"now":time.Now}
+	tmpl = tmpl.Funcs(funcMap)
+	s := &Server{FeedDB: fddb, Router: mux.NewRouter(), Template: tmpl }
+	s.Routes()
+	return s,nil
 }
 
 //Routes binds the routes of the configured router for the FeedServer, add additional routes here!

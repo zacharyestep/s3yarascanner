@@ -8,9 +8,14 @@ services:
     build: 
       context: ./cmd/s3yarascanner
       args:
-        RULESDIR: ./rules 
-        BINARYDIR: ./bins 
-        FEEDSERVERTEMPLATEFILE: ./feed.tmpl
+        RULESDIR: /go/rules 
+        BINARYDIR: /go/bins 
+        SQLITEDB: /go/db/results.db
+        FEEDSERVERTEMPLATEFILE: /go/feed.tmpl
+    volumes:
+      - type: bind
+        source: $PWD
+        target: /vol
 
     environment:
       BINARYSOURCEBUCKET: bucket 
