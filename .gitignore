@@ -5,6 +5,7 @@
 *.so
 *.dylib
 s3yarascanner
+results.db
 
 # Test binary, build with `go test -c`
 *.test

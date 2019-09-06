@@ -93,7 +93,7 @@ func main() {
 	//options for feed server
 	feedServerURLStr := os.Getenv("FEEDSERVERURL")
 	if len(feedServerURLStr) == 0 { 
-		feedServerURLStr = "http://127.0.0.1:31452"
+		feedServerURLStr = "http://127.0.0.1:31425"
 	}
 
 	feedServerHostURL,err  := url.Parse(feedServerURLStr)
@@ -153,15 +153,15 @@ func main() {
 	}
 
 	if len(runmetrics) > 0 {
+		//TODO make metric logging to file conditional
 		go metrics.Log(metrics.DefaultRegistry, realMetricsInterval, log.New() )
-	}
-
-	if len(metricEndpoint) > 0 {
-		addr, err := net.ResolveTCPAddr("tcp", metricEndpoint)
-		if err != nil { 
-			log.Fatalf("Error starting metrics to graphite...%s %v",metricEndpoint, err)
-		}
-		go graphite.Graphite(metrics.DefaultRegistry, realMetricsInterval , "yarascanner", addr)
+		if len(metricEndpoint) > 0 {
+			addr, err := net.ResolveTCPAddr("tcp", metricEndpoint)
+			if err != nil { 
+				log.Fatalf("Error starting metrics to graphite...%s %v",metricEndpoint, err)
+			}
+			go graphite.Graphite(metrics.DefaultRegistry, realMetricsInterval , "yarascanner", addr)
+		}	
 	}
 	
 	//Todo - HANDLE SHUTTING THIS DOWN

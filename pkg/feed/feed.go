@@ -28,12 +28,13 @@ func NewServer(feedTmpl string, fddb * gorm.DB) ( * Server, error) {
 
 //NewServerTmplFile loads a new sever as above except the template arg is a filename with a template content
 func NewServerTmplFile(feedTmplFile string, fddb * gorm.DB) (* Server , error) {
-	tmpl, err := template.ParseFiles(feedTmplFile)
+	funcMap := template.FuncMap{"now":time.Now}
+	
+	tmpl, err := template.New(feedTmplFile).Funcs(funcMap).ParseFiles(feedTmplFile)
 	if err != nil { 
 		return nil, err
 	}
-	funcMap := template.FuncMap{"now":time.Now}
-	tmpl = tmpl.Funcs(funcMap)
+	
 	s := &Server{FeedDB: fddb, Router: mux.NewRouter(), Template: tmpl }
 	s.Routes()
 	return s,nil
@@ -42,6 +43,7 @@ func NewServerTmplFile(feedTmplFile string, fddb * gorm.DB) (* Server , error) {
 //Routes binds the routes of the configured router for the FeedServer, add additional routes here!
 func (fserver * Server)  Routes() {
 	fserver.Router.HandleFunc("/feed.json",fserver.handleFeeds())
+	fserver.Router.HandleFunc("/health/alive",fserver.handleHealth())
 }
 
 
@@ -53,4 +55,11 @@ func (fserver * Server) handleFeeds() http.HandlerFunc {
 			fserver.Template.Execute(w,map[string]interface{}{"reports":models})
 			return	
     }
+}
+
+//handleHeatlh handles healthchecks - currently always good as long as this server is still running.
+func (fserver * Server) handleHealth() http.HandlerFunc { 
+	return func(w http.ResponseWriter, r * http.Request) {
+		return;
+	}
 }

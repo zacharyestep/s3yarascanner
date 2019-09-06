@@ -14,16 +14,18 @@ ARG RULESDIR
 ARG BINARYDIR
 ARG SQLITEDB
 ARG FEEDSERVERTEMPLATEFILE
-ENV FEEDSERVERTEMPLATEFILE ${FEEDSERVERTEMPLATEFILE:-/go/cmd/s3yarascanner/feed.tmpl}
-ENV SQLITEDB ${SQLITEDB:-/go/db/results.db}
-ENV RULESDIR ${RULESDIR:-/go/rules}
-ENV BINARYDIR ${BINARYDIR:-/go/bins}
+ENV FEEDSERVERTEMPLATEFILE ${FEEDSERVERTEMPLATEFILE:-./feed.tmpl}
+ENV SQLITEDB ${SQLITEDB:-./db/results.db}
+ENV RULESDIR ${RULESDIR:-./rules}
+ENV BINARYDIR ${BINARYDIR:-./bins}
 RUN mkdir $BINARYDIR
-RUN mkdir /db
-#COPY ./s3yarascanner /go/s3yarascanner
-#COPY $FEEDSERVERTEMPLATEFILE /go/$FEEDSERVERTEMPLATEFILE
-#RUN chmod +x s3yarascanner
+RUN mkdir $RULESDIR
+RUN mkdir db
+#windows docker support is still lack-luster in 2019 -- uncommment if running on WINDERS/WSL1
+COPY . /go
+RUN chmod +x /go/s3yarascanner
+#End of win-sepcific dockerfile block
 ENV PATH $PATH:$HOME/.local/bin
 ENTRYPOINT ["/bin/bash"]
 #entrypoint is bash , with args from Command array
-CMD ["-c","ls -R /vol ; /vol/cmd/s3yarascanner/s3yarascanner"]
+CMD ["-c","ls -R /go ; /go/s3yarascanner"]

@@ -5,6 +5,7 @@ version: '3.7'
 # 9001 through 9004.
 services:
   scanner:
+    hostname: scanner
     build: 
       context: ./cmd/s3yarascanner
       args:
@@ -12,17 +13,23 @@ services:
         BINARYDIR: /go/bins 
         SQLITEDB: /go/db/results.db
         FEEDSERVERTEMPLATEFILE: /go/feed.tmpl
-    volumes:
-      - type: bind
-        source: $PWD
-        target: /vol
+    #volumes:
+    #  - type: bind
+    #    source: $PWD
+    #    target: /vol
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:31425/health"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
 
     environment:
       BINARYSOURCEBUCKET: bucket 
-      ENDPOINTURL: http://127.0.0.1:9000 
+      ENDPOINTURL: http://minio:9000 
       SQLITEDB: ./db/results.db 
       RULESDIR: ./rules 
-      BINARYDIR: ./bins 
+      BINARYDIR: ./bins
+      FEEDSERVERTEMPLATEFIE: ./feed.tmpl 
       AWS_ACCESS_KEY: minio 
       AWS_SECRET_KEY: minio123 
       S3FORCEPATHSTYLE: 1 
@@ -31,6 +38,7 @@ services:
       LOGLEVEL: debug
 
   minio1:
+    hostname: minio
     image: minio/minio:latest
     volumes:
       - data1-1:/data1

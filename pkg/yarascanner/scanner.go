@@ -29,6 +29,14 @@ type Scanner struct {
 	workerwaitgroup *sync.WaitGroup
 	ScanningChan chan fsnotify.Event
 }
+//NewScannerDBString returns a scanner, or error if construction fails 
+func NewScannerDBString(binDir,ruleDir,db string) (*Scanner, error) { 
+	gdb, err := gorm.Open("sqlite3",db)
+	if err != nil  { 
+		return nil, err
+	}
+	return NewScanner(binDir,ruleDir,gdb)
+}
 
 //NewScanner returns a new scanner, or an error if construction fails
 func NewScanner(binDir,ruleDir string, db * gorm.DB) (*Scanner, error) {
@@ -86,7 +94,6 @@ type WatchedRulesetProvider struct {
 	RuleDir string
 }
 
-
 //Stop closes output channel
 func (wrp * WatchedRulesetProvider) Stop() { 
 	close(wrp.OutgoingRulesChan)
@@ -109,8 +116,7 @@ func NewWatchedRulesetProvider(ruleDir string, ruleDb * gorm.DB, rulesUpdateChan
 		return nil , fmt.Errorf("YC error %v ",err)
 	}
 	wrp := WatchedRulesetProvider{Compiler: compiler, RuleDir: ruleDir, RuleDB: ruleDb , IncomingRulesChan: rulesUpdateChan, OutgoingRulesChan: make(chan fsnotify.Event,1000)}
-	err = wrp.LoadRules()
-	log.Debugf("Load rules returned %v errorcode",err)
+	//err = wrp.LoadRules()
 	return &wrp,err
 }
 
@@ -120,6 +126,7 @@ func (wrp * WatchedRulesetProvider) Go(wg * sync.WaitGroup) {
 	defer log.Debug("WatchedRuleSetProvider -> Go exiting")
 	defer wg.Done()
 	for ruleEvent := range wrp.IncomingRulesChan { 
+		log.Debugf("WRP providing outgoing rule event")
 		wrp.OutgoingRulesChan <- ruleEvent
 		wrp.Lock()
 		defer wrp.Unlock()
@@ -138,7 +145,7 @@ func (wrp * WatchedRulesetProvider) Go(wg * sync.WaitGroup) {
 
 //GetRules returns the current rules from the underlying provider
 func (wrp * WatchedRulesetProvider) GetRules() (rules * yara.Rules, err error) {
-	wrp.RLock()
+	wrp.Lock()
 	defer wrp.Unlock()
 	return wrp.rules, nil
 }
@@ -171,7 +178,13 @@ func (wrp * WatchedRulesetProvider) LoadRules() error {
 			return err 
 		}
 	}
-	return nil
+	newrules, err := wrp.Compiler.GetRules()
+	if err == nil {
+		wrp.rules = newrules
+		return nil
+	} else {
+		return err
+	}
 }
 
 //GetRules returns the rules from the underlying provider, or an error if that fails
@@ -186,6 +199,7 @@ func PipeWorker(dest chan<- fsnotify.Event, source <-chan fsnotify.Event, wg * s
 	defer log.Debugf("Pipeworker exiting...")
 	defer wg.Done()
 	for msg := range source { 
+		log.Debugf("Pipeworker piping...")
 		dest <- msg
 	}
 }
@@ -238,8 +252,9 @@ func (scanr * Scanner) LoadBins() {
 		log.Fatalf("Error loading binary dir %s %v", scanr.BinDir, err)
 	}
 	for _, bin := range bins {
-		log.Debugf(bin.Name())
+		log.Debugf("Loaded bin - %s",bin.Name())
 		scanr.resultsDB.Create(&models.Binary{Hash: bin.Name()})
+		scanr.ScanningChan <- fsnotify.Event{Name: bin.Name()}
 	}
 }
 
@@ -255,11 +270,15 @@ func ScanningWorker(binDir string, toScan <-chan fsnotify.Event, scanResults cha
 	defer log.Debugf("scanning worker exiting")
 	defer wg.Done()
 	for binFileEvent := range toScan {
+		log.Debugf("Scanning worker going to scan %s", binFileEvent.Name)
 		ruleset,err := rulesetProvider.GetRules()
 		if err != nil {
 			log.Fatalf("Error scanning - %v",err)
 		}
-		matches, err := ruleset.ScanFile(filepath.Join(binDir, binFileEvent.Name), 0, 30*time.Second)
+		if ruleset == nil { 
+			log.Fatalf("Got no rules from provider")
+		}
+		matches, err := ruleset.ScanFile(filepath.Join(binDir, binFileEvent.Name), yara.ScanFlagsFastMode, 5*time.Second)
 		if err != nil {
 			log.Debugf("Error scanning %s %v", binFileEvent.Name, err)
 		} else {
@@ -283,9 +302,14 @@ func ResultDBWorker(db *gorm.DB, scanResults <-chan BinaryMatches, wg *sync.Wait
 	defer wg.Done()
 
 	for matches := range scanResults {
+		log.Debugf("Results worker procesing result set %v",matches)
 		for _, match := range matches.Matches {
-			db.Create(models.Result{BinaryHash: matches.FileHash, RuleName: match.Rule, Score: match.Meta["Score"].(int), Namespace: match.Namespace})
+			log.Debugf("Match is : %s %s %d %s ",matches.FileHash,match.Rule,int(match.Meta["score"].(int32)), match.Namespace)
+			intscore := int(match.Meta["score"].(int32))
+			//db.Create(&models.Result{Score: intscore, BinaryHash: matches.FileHash})
+			db.Create(&models.Result{BinaryHash: matches.FileHash, RuleName: match.Rule, Score: intscore, Namespace: match.Namespace})
 		}
+		log.Debugf("Results worker done processing results for ... %s", matches.FileHash)
 	}
-
+ 
 }
